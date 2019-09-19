@@ -95,23 +95,19 @@ func (db *DB) Has(key []byte, ro *opt.ReadOptions) (ret bool, err error) {
 }
 
 func (db *DB) Put(key, value []byte, wo *opt.WriteOptions) error {
-	txn, err := db.env.BeginTxn(nil, 0)
-	if err != nil {
-		return err
-	}
-	defer txn.Abort()
+	err := db.env.Update(func(txn *lmdb.Txn) (err error) {
+		db, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
 
-	dpi, err := txn.OpenDBI(MainDB, 0)
-	if err != nil {
-		return err
-	}
-	defer db.env.CloseDBI(dpi)
+		err = txn.Put(db, key, value, lmdb.Current)
+		if err != nil {
+			return fmt.Errorf("put: %v", err)
+		}
+		return nil
+	})
 
-	err = txn.Put(dpi, key, value, 0)
-	if err != nil {
-		return err
-	}
-	err = txn.Commit()
 	return err
 }
 
