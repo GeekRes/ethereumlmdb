@@ -712,19 +712,20 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 			return err
 		}
 		// If the batch is too large, flush to disk
-		if batch.ValueSize() > ethdb.IdealBatchSize {
-			if err := batch.Write(); err != nil {
-				return err
-			}
-			batch.Reset()
-		}
+		// if batch.ValueSize() > ethdb.IdealBatchSize {
+		// 	if err := batch.Write(); err != nil {
+		// 		return err
+		// 	}
+		// 	batch.Reset()
+		// }
 	}
+
 	// Since we're going to replay trie node writes into the clean cache, flush out
 	// any batched pre-images before continuing.
-	if err := batch.Write(); err != nil {
-		return err
-	}
-	batch.Reset()
+	// if err := batch.Write(); err != nil {
+	// 	return err
+	// }
+	// batch.Reset()
 
 	// Move the trie itself into the batch, flushing if enough data is accumulated
 	nodes, storage := len(db.dirties), db.dirtiesSize
@@ -734,17 +735,19 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 		log.Error("Failed to commit trie from trie database", "err", err)
 		return err
 	}
+
 	// Trie mostly committed to disk, flush any batch leftovers
 	if err := batch.Write(); err != nil {
 		log.Error("Failed to write trie to disk", "err", err)
 		return err
 	}
+
 	// Uncache any leftovers in the last batch
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
-	batch.Replay(uncacher)
-	batch.Reset()
+	// batch.Replay(uncacher)
+	// batch.Reset()
 
 	// Reset the storage counters and bumpd metrics
 	db.preimages = make(map[common.Hash][]byte)
@@ -764,7 +767,6 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 	// Reset the garbage collection statistics
 	db.gcnodes, db.gcsize, db.gctime = 0, 0, 0
 	db.flushnodes, db.flushsize, db.flushtime = 0, 0, 0
-
 	return nil
 }
 
@@ -780,17 +782,18 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 			return err
 		}
 	}
+
 	if err := batch.Put(hash[:], node.rlp()); err != nil {
 		return err
 	}
 	// If we've reached an optimal batch size, commit and start over
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
-		if err := batch.Write(); err != nil {
-			return err
-		}
+		// if err := batch.Write(); err != nil {
+		// 	return err
+		// }
 		db.lock.Lock()
-		batch.Replay(uncacher)
-		batch.Reset()
+		// batch.Replay(uncacher)
+		// batch.Reset()
 		db.lock.Unlock()
 	}
 	return nil

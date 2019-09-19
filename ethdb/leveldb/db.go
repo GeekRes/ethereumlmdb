@@ -27,7 +27,12 @@ func NewDB(file string) (*DB, error) {
 		panic(err)
 	}
 
-	fmt.Println(file)
+	err = env.SetMapSize(1024 * 1024 * 1024)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("========> ", file)
 
 	err = env.Open(file, 0, 0644)
 	if err != nil {
@@ -53,39 +58,40 @@ func (db *DB) Close() error {
 	return nil
 }
 
-func (db *DB) Get(key []byte, ro *opt.ReadOptions) (value []byte, err error) {
-	txn, err := db.env.BeginTxn(nil, lmdb.Readonly)
+func (db *DB) Get(key []byte, ro *opt.ReadOptions) ([]byte, error) {
+	var value []byte
+	err := db.env.View(func(txn *lmdb.Txn) (err error) {
+		dbi, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
+
+		value, err = txn.Get(dbi, key)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	defer txn.Abort()
-	dpi, err := txn.OpenDBI(MainDB, 0)
-
-	if err != nil {
-		return nil, err
-	}
-
-	value, err = txn.Get(dpi, key)
-	db.env.CloseDBI(dpi)
-	return value, err
+	return value, nil
 }
 
-func (db *DB) Has(key []byte, ro *opt.ReadOptions) (ret bool, err error) {
-	txn, err := db.env.BeginTxn(nil, lmdb.Readonly)
-	if err != nil {
-		return false, err
-	}
+func (db *DB) Has(key []byte, ro *opt.ReadOptions) (bool, error) {
+	var value []byte
+	err := db.env.View(func(txn *lmdb.Txn) (err error) {
+		dbi, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
 
-	defer txn.Abort()
-	dpi, err := txn.OpenDBI(MainDB, 0)
-
-	if err != nil {
-		return false, err
-	}
-
-	_, err = txn.Get(dpi, key)
-	db.env.CloseDBI(dpi)
+		value, err = txn.Get(dbi, key)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 
 	if err != nil {
 		return false, err
@@ -95,44 +101,42 @@ func (db *DB) Has(key []byte, ro *opt.ReadOptions) (ret bool, err error) {
 }
 
 func (db *DB) Put(key, value []byte, wo *opt.WriteOptions) error {
-	txn, err := db.env.BeginTxn(nil, 0)
-	if err != nil {
-		return err
-	}
-	defer txn.Abort()
+	err := db.env.Update(func(txn *lmdb.Txn) (err error) {
+		db, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
 
-	dpi, err := txn.OpenDBI(MainDB, 0)
+		err = txn.Put(db, key, value, 0)
+		if err != nil {
+			return fmt.Errorf("put: %v", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return err
+		panic(err)
 	}
-	defer db.env.CloseDBI(dpi)
 
-	err = txn.Put(dpi, key, value, 0)
-	if err != nil {
-		return err
-	}
-	err = txn.Commit()
 	return err
 }
 
 func (db *DB) Delete(key []byte, wo *opt.WriteOptions) error {
-	txn, err := db.env.BeginTxn(nil, 0)
-	if err != nil {
-		return err
-	}
-	defer txn.Abort()
+	err := db.env.Update(func(txn *lmdb.Txn) (err error) {
+		db, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
 
-	dpi, err := txn.OpenDBI(MainDB, 0)
+		err = txn.Del(db, key, nil)
+		if err != nil {
+			return fmt.Errorf("del: %v", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return err
+		panic(err)
 	}
-	defer db.env.CloseDBI(dpi)
 
-	err = txn.Del(dpi, key, nil)
-	if err != nil {
-		return err
-	}
-	err = txn.Commit()
 	return err
 }
 
@@ -149,7 +153,27 @@ func (db *DB) CompactRange(r util.Range) error {
 }
 
 func (db *DB) Write(batch *Batch, wo *opt.WriteOptions) error {
-	return batch.txn.Commit()
+
+	err := db.env.Update(func(txn *lmdb.Txn) (err error) {
+		db, err := txn.OpenRoot(0)
+		if err != nil {
+			return err
+		}
+
+		for k, v := range batch.cache {
+			err = txn.Put(db, []byte(k), v, 0)
+			if err != nil {
+				return fmt.Errorf("put: %v", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return nil
 }
 
 type BatchReplay interface {
@@ -158,46 +182,29 @@ type BatchReplay interface {
 }
 
 type Batch struct {
-	txn      *lmdb.Txn
-	dbi      lmdb.DBI
-	errornum int
+	env   *lmdb.Env
+	cache map[string][]byte
 }
 
 func NewBatch(env *lmdb.Env) *Batch {
-	txn, err := env.BeginTxn(nil, 0)
-	if err != nil {
-		panic(err)
-	}
-
-	dbi, err := txn.OpenDBI(MainDB, lmdb.Create)
-	if err != nil {
-		panic(err)
-	}
 
 	b := &Batch{
-		txn: txn,
-		dbi: dbi,
+		env:   env,
+		cache: make(map[string][]byte),
 	}
 
 	return b
 }
 
 func (b *Batch) Put(key, value []byte) {
-	err := b.txn.Put(b.dbi, key, value, 0)
-
-	if err != nil {
-		b.errornum++
-	}
+	b.cache[string(key)] = value
 }
 
 func (b *Batch) Delete(key []byte) {
-	err := b.txn.Del(b.dbi, key, nil)
-	if err != nil {
-		b.errornum++
-	}
+	delete(b.cache, string(key))
 }
 func (b *Batch) Reset() {
-	b.txn.Reset()
+
 }
 
 func (b *Batch) Replay(r BatchReplay) error {
