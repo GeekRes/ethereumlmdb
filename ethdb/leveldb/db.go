@@ -108,6 +108,7 @@ func (db *DB) Put(key, value []byte, wo *opt.WriteOptions) error {
 		}
 
 		err = txn.Put(db, key, value, 0)
+
 		if err != nil {
 			return fmt.Errorf("put: %v", err)
 		}
